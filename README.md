@@ -11,7 +11,7 @@ python scaffold.py
 ## Steps
 
 - [x] **1.** matmul_cpu
-- [ ] **2.** max_abs_diff
+- [x] **2.** max_abs_diff
 - [ ] **3.** matmul_naive_kernel
 - [ ] **4.** matmul_coalesced_kernel
 - [ ] **5.** time_launch_ms
