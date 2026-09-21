@@ -12,7 +12,7 @@ python scaffold.py
 
 - [x] **1.** matmul_cpu
 - [x] **2.** max_abs_diff
-- [ ] **3.** matmul_naive_kernel
+- [x] **3.** matmul_naive_kernel
 - [ ] **4.** matmul_coalesced_kernel
 - [ ] **5.** time_launch_ms
 - [ ] **6.** matmul_tiled_kernel
