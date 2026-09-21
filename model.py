@@ -442,8 +442,127 @@ void launch_matmul_vectorized(const float* A, const float* B, float* C,
     matmul_vectorized_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 10 - matmul_double_buffered_kernel (not yet solved)
-# TODO: implement
+# Step 10 - matmul_double_buffered_kernel
+#include <cuda_runtime.h>
+
+constexpr int D_BM = 64, D_BN = 64, D_BK = 8, D_TM = 4, D_TN = 4;
+
+__global__ void matmul_double_buffered_kernel(const float* A, const float* B, float* C,
+                                              int M, int N, int K) {
+    __shared__ float As[2][D_BM * D_BK];   // 2 stages of 64 x 8
+    __shared__ float Bs[2][D_BK * D_BN];   // 2 stages of 8 x 64
+
+    int tid = threadIdx.x;                       // 0 .. 255
+    int thread_row = (tid / 16) * D_TM;          // 0, 4, ..., 60
+    int thread_col = (tid % 16) * D_TN;          // 0, 4, ..., 60
+    int block_row  = blockIdx.y * D_BM;
+    int block_col  = blockIdx.x * D_BN;
+
+    // Each thread owns two elements of the 512-element A tile and two of B.
+    // Flat index = tid and tid + 256; A uses (r = i / 8, c = i % 8),
+    // B uses (r = i / 64, c = i % 64).
+    int a_r0 = tid / D_BK;              int a_c0 = tid % D_BK;
+    int a_r1 = (tid + 256) / D_BK;      int a_c1 = (tid + 256) % D_BK;
+    int b_r0 = tid / D_BN;              int b_c0 = tid % D_BN;
+    int b_r1 = (tid + 256) / D_BN;      int b_c1 = (tid + 256) % D_BN;
+
+    float acc[D_TM][D_TN];
+    #pragma unroll
+    for (int i = 0; i < D_TM; ++i)
+        #pragma unroll
+        for (int j = 0; j < D_TN; ++j)
+            acc[i][j] = 0.0f;
+
+    int num_tiles = (K + D_BK - 1) / D_BK;
+
+    // -------- Prologue: load tile 0 into stage 0 --------
+    {
+        int gr0 = block_row + a_r0, gc0 = a_c0;
+        int gr1 = block_row + a_r1, gc1 = a_c1;
+        As[0][a_r0 * D_BK + a_c0] = (gr0 < M && gc0 < K) ? A[gr0 * K + gc0] : 0.0f;
+        As[0][a_r1 * D_BK + a_c1] = (gr1 < M && gc1 < K) ? A[gr1 * K + gc1] : 0.0f;
+
+        int gbr0 = b_r0, gbc0 = block_col + b_c0;
+        int gbr1 = b_r1, gbc1 = block_col + b_c1;
+        Bs[0][b_r0 * D_BN + b_c0] = (gbr0 < K && gbc0 < N) ? B[gbr0 * N + gbc0] : 0.0f;
+        Bs[0][b_r1 * D_BN + b_c1] = (gbr1 < K && gbc1 < N) ? B[gbr1 * N + gbc1] : 0.0f;
+    }
+    __syncthreads();
+
+    // -------- Steady state --------
+    int stage = 0;
+    for (int t = 0; t < num_tiles; ++t) {
+        // 1) Prefetch tile t+1 into registers (still global memory, hidden
+        //    behind the FMAs below).
+        float pa0 = 0.f, pa1 = 0.f, pb0 = 0.f, pb1 = 0.f;
+        bool has_next = (t + 1) < num_tiles;
+        if (has_next) {
+            int kn = (t + 1) * D_BK;
+
+            int gr0 = block_row + a_r0, gc0 = kn + a_c0;
+            int gr1 = block_row + a_r1, gc1 = kn + a_c1;
+            pa0 = (gr0 < M && gc0 < K) ? A[gr0 * K + gc0] : 0.0f;
+            pa1 = (gr1 < M && gc1 < K) ? A[gr1 * K + gc1] : 0.0f;
+
+            int gbr0 = kn + b_r0, gbc0 = block_col + b_c0;
+            int gbr1 = kn + b_r1, gbc1 = block_col + b_c1;
+            pb0 = (gbr0 < K && gbc0 < N) ? B[gbr0 * N + gbc0] : 0.0f;
+            pb1 = (gbr1 < K && gbc1 < N) ? B[gbr1 * N + gbc1] : 0.0f;
+        }
+
+        // 2) Compute from the current stage.
+        #pragma unroll
+        for (int k = 0; k < D_BK; ++k) {
+            float regA[D_TM];
+            float regB[D_TN];
+            #pragma unroll
+            for (int i = 0; i < D_TM; ++i)
+                regA[i] = As[stage][(thread_row + i) * D_BK + k];
+            #pragma unroll
+            for (int j = 0; j < D_TN; ++j)
+                regB[j] = Bs[stage][k * D_BN + thread_col + j];
+            #pragma unroll
+            for (int i = 0; i < D_TM; ++i)
+                #pragma unroll
+                for (int j = 0; j < D_TN; ++j)
+                    acc[i][j] += regA[i] * regB[j];
+        }
+
+        // 3) Publish the prefetched registers into the free stage.
+        int next_stage = 1 - stage;
+        if (has_next) {
+            As[next_stage][a_r0 * D_BK + a_c0] = pa0;
+            As[next_stage][a_r1 * D_BK + a_c1] = pa1;
+            Bs[next_stage][b_r0 * D_BN + b_c0] = pb0;
+            Bs[next_stage][b_r1 * D_BN + b_c1] = pb1;
+        }
+
+        // 4) One barrier: separates this iteration's compute from the next
+        //    iteration's writes into the same stage, and this iteration's
+        //    writes into next_stage from the next iteration's reads.
+        __syncthreads();
+        stage = next_stage;
+    }
+
+    // -------- Epilogue: guarded 4 x 4 store --------
+    #pragma unroll
+    for (int i = 0; i < D_TM; ++i) {
+        int gr = block_row + thread_row + i;
+        #pragma unroll
+        for (int j = 0; j < D_TN; ++j) {
+            int gc = block_col + thread_col + j;
+            if (gr < M && gc < N)
+                C[gr * N + gc] = acc[i][j];
+        }
+    }
+}
+
+void launch_matmul_double_buffered(const float* A, const float* B, float* C,
+                                   int M, int N, int K) {
+    dim3 block(256);
+    dim3 grid((N + D_BN - 1) / D_BN, (M + D_BM - 1) / D_BM);
+    matmul_double_buffered_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 11 - matmul_nt_kernel (not yet solved)
 # TODO: implement
