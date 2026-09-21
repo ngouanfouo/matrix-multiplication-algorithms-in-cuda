@@ -859,8 +859,101 @@ void launch_matrix_addsub(const float* X, int ldx,
     matrix_addsub_kernel<<<grid, block>>>(X, ldx, Y, ldy, Z, ldz, rows, cols, sign);
 }
 
-# Step 17 - strassen_one_level (not yet solved)
-# TODO: implement
+# Step 17 - strassen_one_level
+#include <cuda_runtime.h>
+
+void strassen_one_level(const float* A, const float* B, float* C, int n) {
+    int h = n / 2;
+
+    // --- Quadrant pointers (leading dimension n) ---
+    const float* A11 = A;
+    const float* A12 = A + h;
+    const float* A21 = A + (size_t)h * n;
+    const float* A22 = A + (size_t)h * n + h;
+
+    const float* B11 = B;
+    const float* B12 = B + h;
+    const float* B21 = B + (size_t)h * n;
+    const float* B22 = B + (size_t)h * n + h;
+
+    float* C11 = C;
+    float* C12 = C + h;
+    float* C21 = C + (size_t)h * n;
+    float* C22 = C + (size_t)h * n + h;
+
+    // --- Scratch buffers: two h x h operand buffers, seven h x h products ---
+    size_t bytes = (size_t)h * h * sizeof(float);
+    float *S1, *S2;
+    float *P1, *P2, *P3, *P4, *P5, *P6, *P7;
+    cudaMalloc(&S1, bytes);
+    cudaMalloc(&S2, bytes);
+    cudaMalloc(&P1, bytes);
+    cudaMalloc(&P2, bytes);
+    cudaMalloc(&P3, bytes);
+    cudaMalloc(&P4, bytes);
+    cudaMalloc(&P5, bytes);
+    cudaMalloc(&P6, bytes);
+    cudaMalloc(&P7, bytes);
+
+    // Leading dimension of every scratch buffer is h (contiguous h x h).
+
+    // --- P1 = (A11 + A22)(B11 + B22) ---
+    launch_matrix_addsub(A11, n, A22, n, S1, h, h, h,  1.0f);
+    launch_matrix_addsub(B11, n, B22, n, S2, h, h, h,  1.0f);
+    launch_matmul_tiled(S1, S2, P1, h, h, h);
+
+    // --- P2 = (A21 + A22) B11 ---
+    launch_matrix_addsub(A21, n, A22, n, S1, h, h, h,  1.0f);
+    launch_matrix_addsub(B11, n, B11, n, S2, h, h, h,  0.0f);   // copy B11
+    launch_matmul_tiled(S1, S2, P2, h, h, h);
+
+    // --- P3 = A11 (B12 - B22) ---
+    launch_matrix_addsub(A11, n, A11, n, S1, h, h, h,  0.0f);   // copy A11
+    launch_matrix_addsub(B12, n, B22, n, S2, h, h, h, -1.0f);
+    launch_matmul_tiled(S1, S2, P3, h, h, h);
+
+    // --- P4 = A22 (B21 - B11) ---
+    launch_matrix_addsub(A22, n, A22, n, S1, h, h, h,  0.0f);   // copy A22
+    launch_matrix_addsub(B21, n, B11, n, S2, h, h, h, -1.0f);
+    launch_matmul_tiled(S1, S2, P4, h, h, h);
+
+    // --- P5 = (A11 + A12) B22 ---
+    launch_matrix_addsub(A11, n, A12, n, S1, h, h, h,  1.0f);
+    launch_matrix_addsub(B22, n, B22, n, S2, h, h, h,  0.0f);   // copy B22
+    launch_matmul_tiled(S1, S2, P5, h, h, h);
+
+    // --- P6 = (A21 - A11)(B11 + B12) ---
+    launch_matrix_addsub(A21, n, A11, n, S1, h, h, h, -1.0f);
+    launch_matrix_addsub(B11, n, B12, n, S2, h, h, h,  1.0f);
+    launch_matmul_tiled(S1, S2, P6, h, h, h);
+
+    // --- P7 = (A12 - A22)(B21 + B22) ---
+    launch_matrix_addsub(A12, n, A22, n, S1, h, h, h, -1.0f);
+    launch_matrix_addsub(B21, n, B22, n, S2, h, h, h,  1.0f);
+    launch_matmul_tiled(S1, S2, P7, h, h, h);
+
+    // --- Assemble C quadrants in place ---
+    // C11 = P1 + P4 - P5 + P7
+    launch_matrix_addsub(P1, h, P4, h, C11, n, h, h,  1.0f);
+    launch_matrix_addsub(C11, n, P5, h, C11, n, h, h, -1.0f);
+    launch_matrix_addsub(C11, n, P7, h, C11, n, h, h,  1.0f);
+
+    // C12 = P3 + P5
+    launch_matrix_addsub(P3, h, P5, h, C12, n, h, h,  1.0f);
+
+    // C21 = P2 + P4
+    launch_matrix_addsub(P2, h, P4, h, C21, n, h, h,  1.0f);
+
+    // C22 = P1 - P2 + P3 + P6
+    launch_matrix_addsub(P1, h, P2, h, C22, n, h, h, -1.0f);
+    launch_matrix_addsub(C22, n, P3, h, C22, n, h, h,  1.0f);
+    launch_matrix_addsub(C22, n, P6, h, C22, n, h, h,  1.0f);
+
+    // --- Free scratch ---
+    cudaFree(S1); cudaFree(S2);
+    cudaFree(P1); cudaFree(P2); cudaFree(P3); cudaFree(P4);
+    cudaFree(P5); cudaFree(P6); cudaFree(P7);
+}
 
 # Step 18 - csr_spmm_kernel (not yet solved)
 # TODO: implement
