@@ -18,7 +18,7 @@ python scaffold.py
 - [x] **6.** matmul_tiled_kernel
 - [x] **7.** matmul_tiled_1d_kernel
 - [x] **8.** matmul_tiled_2d_kernel
-- [ ] **9.** matmul_vectorized_kernel
+- [x] **9.** matmul_vectorized_kernel
 - [ ] **10.** matmul_double_buffered_kernel
 - [ ] **11.** matmul_nt_kernel
 - [ ] **12.** matmul_batched_kernel

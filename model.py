@@ -340,8 +340,107 @@ void launch_matmul_tiled_2d(const float* A, const float* B, float* C,
     matmul_tiled_2d_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 9 - matmul_vectorized_kernel (not yet solved)
-# TODO: implement
+# Step 9 - matmul_vectorized_kernel
+#include <cuda_runtime.h>
+
+constexpr int V_BM = 64, V_BN = 64, V_BK = 8, V_TM = 4, V_TN = 4;
+
+__global__ void matmul_vectorized_kernel(const float* A, const float* B, float* C,
+                                         int M, int N, int K) {
+    // A tile stored transposed: As[k * V_BM + m] = A[block_row + m][k0 + k]
+    __shared__ float As[V_BK * V_BM];
+    // B tile stored row-major with 16-byte alignment for float4 access
+    __shared__ __align__(16) float Bs[V_BK * V_BN];
+
+    int tid = threadIdx.x;                          // 0 .. 255
+    int thread_row = (tid / 16) * V_TM;             // 0, 4, ..., 60
+    int thread_col = (tid % 16) * V_TN;             // 0, 4, ..., 60
+    int block_row  = blockIdx.y * V_BM;
+    int block_col  = blockIdx.x * V_BN;
+
+    float acc[V_TM][V_TN];
+    #pragma unroll
+    for (int i = 0; i < V_TM; ++i)
+        #pragma unroll
+        for (int j = 0; j < V_TN; ++j)
+            acc[i][j] = 0.0f;
+
+    int num_tiles = (K + V_BK - 1) / V_BK;
+    for (int t = 0; t < num_tiles; ++t) {
+        int k0 = t * V_BK;
+
+        if (tid < 128) {
+            // --- A tile: 64 x 8, one float4 per thread, stored transposed ---
+            int r  = tid / 2;
+            int c  = (tid % 2) * 4;
+            int gr = block_row + r;
+            int gc = k0 + c;
+
+            float4 a4 = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (gr < M && gc < K) {
+                a4 = *reinterpret_cast<const float4*>(&A[gr * K + gc]);
+            }
+            As[(c + 0) * V_BM + r] = a4.x;
+            As[(c + 1) * V_BM + r] = a4.y;
+            As[(c + 2) * V_BM + r] = a4.z;
+            As[(c + 3) * V_BM + r] = a4.w;
+
+            // --- B tile: 8 x 64, one float4 per thread ---
+            int br  = tid / 16;
+            int bc  = (tid % 16) * 4;
+            int gbr = k0 + br;
+            int gbc = block_col + bc;
+
+            float4 b4 = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (gbr < K && gbc < N) {
+                b4 = *reinterpret_cast<const float4*>(&B[gbr * N + gbc]);
+            }
+            *reinterpret_cast<float4*>(&Bs[br * V_BN + bc]) = b4;
+        }
+
+        __syncthreads();
+
+        #pragma unroll
+        for (int k = 0; k < V_BK; ++k) {
+            float regA[V_TM];
+            #pragma unroll
+            for (int i = 0; i < V_TM; ++i)
+                regA[i] = As[k * V_BM + thread_row + i];
+
+            float4 regB = *reinterpret_cast<const float4*>(&Bs[k * V_BN + thread_col]);
+
+            #pragma unroll
+            for (int i = 0; i < V_TM; ++i) {
+                acc[i][0] += regA[i] * regB.x;
+                acc[i][1] += regA[i] * regB.y;
+                acc[i][2] += regA[i] * regB.z;
+                acc[i][3] += regA[i] * regB.w;
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Guarded float4 stores: column guard is required when N < block_col + 64.
+    // N % 4 == 0 and thread_col % 4 == 0, so gc < N implies gc + 3 < N.
+    #pragma unroll
+    for (int i = 0; i < V_TM; ++i) {
+        int gr = block_row + thread_row + i;
+        int gc = block_col + thread_col;
+        if (gr < M && gc < N) {
+            float4 out = make_float4(acc[i][0], acc[i][1], acc[i][2], acc[i][3]);
+            *reinterpret_cast<float4*>(&C[gr * N + gc]) = out;
+        }
+    }
+}
+
+void launch_matmul_vectorized(const float* A, const float* B, float* C,
+                              int M, int N, int K) {
+    // Caller guarantees K % 4 == 0 and N % 4 == 0.
+    dim3 block(256);
+    dim3 grid((N + V_BN - 1) / V_BN, (M + V_BM - 1) / V_BM);
+    matmul_vectorized_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 10 - matmul_double_buffered_kernel (not yet solved)
 # TODO: implement
