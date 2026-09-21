@@ -28,7 +28,7 @@ python scaffold.py
 - [x] **16.** matrix_addsub_kernel
 - [x] **17.** strassen_one_level
 - [x] **18.** csr_spmm_kernel
-- [ ] **19.** matmul_lower_triangular_kernel
+- [x] **19.** matmul_lower_triangular_kernel
 - [ ] **20.** matmul_dispatch
 
 ---

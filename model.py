@@ -984,8 +984,62 @@ void launch_csr_spmm(const int* row_ptr, const int* col_idx, const float* vals,
     csr_spmm_kernel<<<grid, block>>>(row_ptr, col_idx, vals, B, C, M, N);
 }
 
-# Step 19 - matmul_lower_triangular_kernel (not yet solved)
-# TODO: implement
+# Step 19 - matmul_lower_triangular_kernel
+#include <cuda_runtime.h>
+
+constexpr int TILE_TRI = 16;
+
+__global__ void matmul_lower_triangular_kernel(const float* A, const float* B,
+                                               float* C, int M, int N) {
+    __shared__ float As[TILE_TRI][TILE_TRI];
+    __shared__ float Bs[TILE_TRI][TILE_TRI];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    int row = blockIdx.y * TILE_TRI + ty;   // m index in C (and row of A)
+    int col = blockIdx.x * TILE_TRI + tx;   // n index in C
+
+    float sum = 0.0f;
+
+    // A is M x M, so K = M. Only K-tiles t = 0 .. blockIdx.y can be nonzero:
+    // block row `by` touches columns of A up to (by+1)*TILE_TRI - 1, and
+    // tiles to the right of the diagonal block are entirely above the diagonal.
+    int last_tile = blockIdx.y;
+    for (int t = 0; t <= last_tile; ++t) {
+        int k0 = t * TILE_TRI;
+
+        // A tile: A[row][k0 + tx], zeroed above the diagonal.
+        int a_col = k0 + tx;
+        bool in_lower = (a_col <= row);     // diagonal condition
+        As[ty][tx] = (row < M && a_col < M && in_lower)
+                         ? A[row * M + a_col] : 0.0f;
+
+        // B tile: B[k0 + ty][col]
+        int b_row = k0 + ty;
+        Bs[ty][tx] = (b_row < M && col < N) ? B[b_row * N + col] : 0.0f;
+
+        __syncthreads();
+
+        #pragma unroll
+        for (int k = 0; k < TILE_TRI; ++k) {
+            sum += As[ty][k] * Bs[k][tx];
+        }
+
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+
+void launch_matmul_lower_triangular(const float* A, const float* B, float* C,
+                                    int M, int N) {
+    dim3 block(TILE_TRI, TILE_TRI);
+    dim3 grid((N + TILE_TRI - 1) / TILE_TRI, (M + TILE_TRI - 1) / TILE_TRI);
+    matmul_lower_triangular_kernel<<<grid, block>>>(A, B, C, M, N);
+}
 
 # Step 20 - matmul_dispatch (not yet solved)
 # TODO: implement
