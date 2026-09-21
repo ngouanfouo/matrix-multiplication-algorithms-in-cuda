@@ -955,8 +955,34 @@ void strassen_one_level(const float* A, const float* B, float* C, int n) {
     cudaFree(P5); cudaFree(P6); cudaFree(P7);
 }
 
-# Step 18 - csr_spmm_kernel (not yet solved)
-# TODO: implement
+# Step 18 - csr_spmm_kernel
+#include <cuda_runtime.h>
+
+__global__ void csr_spmm_kernel(const int* row_ptr, const int* col_idx,
+                                const float* vals, const float* B,
+                                float* C, int M, int N) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;   // output column
+    int m = blockIdx.y * blockDim.y + threadIdx.y;   // output row
+
+    if (m < M && n < N) {
+        int start = row_ptr[m];
+        int end   = row_ptr[m + 1];
+
+        float acc = 0.0f;
+        for (int j = start; j < end; ++j) {
+            int k = col_idx[j];                      // column of A / row of B
+            acc += vals[j] * B[k * N + n];
+        }
+        C[m * N + n] = acc;
+    }
+}
+
+void launch_csr_spmm(const int* row_ptr, const int* col_idx, const float* vals,
+                     const float* B, float* C, int M, int N) {
+    dim3 block(16, 16);
+    dim3 grid((N + 15) / 16, (M + 15) / 16);
+    csr_spmm_kernel<<<grid, block>>>(row_ptr, col_idx, vals, B, C, M, N);
+}
 
 # Step 19 - matmul_lower_triangular_kernel (not yet solved)
 # TODO: implement
