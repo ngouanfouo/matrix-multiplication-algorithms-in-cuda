@@ -1041,6 +1041,41 @@ void launch_matmul_lower_triangular(const float* A, const float* B, float* C,
     matmul_lower_triangular_kernel<<<grid, block>>>(A, B, C, M, N);
 }
 
-# Step 20 - matmul_dispatch (not yet solved)
-# TODO: implement
+# Step 20 - matmul_dispatch
+#include <cuda_runtime.h>
+
+// Launchers implemented in the previous steps.
+void launch_gemv(const float* A, const float* x, float* y, int M, int K);
+void launch_matmul_splitk(const float* A, const float* B, float* C,
+                          int M, int N, int K, int splits);
+void launch_matmul_vectorized(const float* A, const float* B, float* C,
+                              int M, int N, int K);
+void launch_matmul_double_buffered(const float* A, const float* B, float* C,
+                                   int M, int N, int K);
+
+int matmul_dispatch(const float* A, const float* B, float* C,
+                    int M, int N, int K) {
+    // 0) Vector right-hand side: bandwidth-bound, warp-per-row GEMV.
+    if (N == 1) {
+        launch_gemv(A, B, C, M, K);
+        return 0;
+    }
+
+    // 1) Small output with a long reduction: too few output tiles to fill the
+    //    GPU, so split the K dimension across z-blocks and atomically accumulate.
+    if ((long long)M * N <= 4096 && K >= 1024) {
+        launch_matmul_splitk(A, B, C, M, N, K, 8);
+        return 1;
+    }
+
+    // 2) Alignment allows float4 loads and stores: highest-throughput path.
+    if (K % 4 == 0 && N % 4 == 0) {
+        launch_matmul_vectorized(A, B, C, M, N, K);
+        return 2;
+    }
+
+    // 3) General fallback that handles any shape.
+    launch_matmul_double_buffered(A, B, C, M, N, K);
+    return 3;
+}
 
