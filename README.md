@@ -22,7 +22,7 @@ python scaffold.py
 - [x] **10.** matmul_double_buffered_kernel
 - [x] **11.** matmul_nt_kernel
 - [x] **12.** matmul_batched_kernel
-- [ ] **13.** matmul_splitk_kernel
+- [x] **13.** matmul_splitk_kernel
 - [ ] **14.** gemv_kernel
 - [ ] **15.** matmul_bias_relu_kernel
 - [ ] **16.** matrix_addsub_kernel

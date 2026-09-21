@@ -676,8 +676,68 @@ void launch_matmul_batched(const float* A, const float* B, float* C,
     matmul_batched_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 13 - matmul_splitk_kernel (not yet solved)
-# TODO: implement
+# Step 13 - matmul_splitk_kernel
+#include <cuda_runtime.h>
+
+constexpr int TILE_SPLITK = 16;
+
+__global__ void matmul_splitk_kernel(const float* A, const float* B, float* C,
+                                     int M, int N, int K, int k_per_split) {
+    __shared__ float As[TILE_SPLITK][TILE_SPLITK];
+    __shared__ float Bs[TILE_SPLITK][TILE_SPLITK];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    int row = blockIdx.y * TILE_SPLITK + ty;
+    int col = blockIdx.x * TILE_SPLITK + tx;
+
+    // This block's slice of K.
+    int k_begin = blockIdx.z * k_per_split;
+    int k_end   = min(K, k_begin + k_per_split);
+
+    float sum = 0.0f;
+
+    // Walk the K slice in 16-wide tiles.
+    for (int k0 = k_begin; k0 < k_end; k0 += TILE_SPLITK) {
+        // A tile: A[row][k0 + tx]
+        int a_col = k0 + tx;
+        As[ty][tx] = (row < M && a_col < K && a_col < k_end)
+                         ? A[row * K + a_col] : 0.0f;
+
+        // B tile: B[k0 + ty][col]
+        int b_row = k0 + ty;
+        Bs[ty][tx] = (b_row < K && b_row < k_end && col < N)
+                         ? B[b_row * N + col] : 0.0f;
+
+        __syncthreads();
+
+        #pragma unroll
+        for (int k = 0; k < TILE_SPLITK; ++k) {
+            sum += As[ty][k] * Bs[k][tx];
+        }
+
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        atomicAdd(&C[row * N + col], sum);
+    }
+}
+
+void launch_matmul_splitk(const float* A, const float* B, float* C,
+                          int M, int N, int K, int splits) {
+    // C accumulates partials across z, so it must start at zero.
+    cudaMemset(C, 0, (size_t)M * N * sizeof(float));
+
+    int k_per_split = (K + splits - 1) / splits;
+
+    dim3 block(TILE_SPLITK, TILE_SPLITK);
+    dim3 grid((N + TILE_SPLITK - 1) / TILE_SPLITK,
+              (M + TILE_SPLITK - 1) / TILE_SPLITK,
+              splits);
+    matmul_splitk_kernel<<<grid, block>>>(A, B, C, M, N, K, k_per_split);
+}
 
 # Step 14 - gemv_kernel (not yet solved)
 # TODO: implement
