@@ -169,8 +169,83 @@ void launch_matmul_tiled(const float* A, const float* B, float* C,
     matmul_tiled_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 7 - matmul_tiled_1d_kernel (not yet solved)
-# TODO: implement
+# Step 7 - matmul_tiled_1d_kernel
+#include <cuda_runtime.h>
+
+constexpr int R1_BM = 64, R1_BN = 64, R1_BK = 8, R1_TM = 8;
+
+__global__ void matmul_tiled_1d_kernel(const float* A, const float* B, float* C,
+                                       int M, int N, int K) {
+    __shared__ float As[R1_BM * R1_BK];   // 64 x 8
+    __shared__ float Bs[R1_BK * R1_BN];   // 8 x 64
+
+    int tid = threadIdx.x;                     // 0 .. 511
+
+    // Output ownership: one column, 8 consecutive rows.
+    int col       = tid % R1_BN;               // 0 .. 63
+    int row_group = (tid / R1_BN) * R1_TM;     // 0, 8, 16, ..., 56
+
+    // Load positions within the tiles.
+    int a_row = tid / R1_BK;                   // 0 .. 63
+    int a_col = tid % R1_BK;                   // 0 .. 7
+    int b_row = tid / R1_BN;                   // 0 .. 7
+    int b_col = tid % R1_BN;                   // 0 .. 63
+
+    float acc[R1_TM];
+    #pragma unroll
+    for (int i = 0; i < R1_TM; ++i) acc[i] = 0.0f;
+
+    int block_row = blockIdx.y * R1_BM;
+    int block_col = blockIdx.x * R1_BN;
+
+    int num_tiles = (K + R1_BK - 1) / R1_BK;
+    for (int t = 0; t < num_tiles; ++t) {
+        int k0 = t * R1_BK;
+
+        // One guarded load per thread into As (A block_row..+63, k0..k0+7)
+        int g_a_row = block_row + a_row;
+        int g_a_col = k0 + a_col;
+        As[a_row * R1_BK + a_col] =
+            (g_a_row < M && g_a_col < K) ? A[g_a_row * K + g_a_col] : 0.0f;
+
+        // One guarded load per thread into Bs (B k0..k0+7, block_col..+63)
+        int g_b_row = k0 + b_row;
+        int g_b_col = block_col + b_col;
+        Bs[b_row * R1_BN + b_col] =
+            (g_b_row < K && g_b_col < N) ? B[g_b_row * N + g_b_col] : 0.0f;
+
+        __syncthreads();
+
+        // Register blocking: one Bs read feeds R1_TM FMAs.
+        #pragma unroll
+        for (int k = 0; k < R1_BK; ++k) {
+            float b = Bs[k * R1_BN + col];
+            #pragma unroll
+            for (int i = 0; i < R1_TM; ++i) {
+                acc[i] += As[(row_group + i) * R1_BK + k] * b;
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Guarded stores of the 8 accumulators.
+    #pragma unroll
+    for (int i = 0; i < R1_TM; ++i) {
+        int g_row = block_row + row_group + i;
+        int g_col = block_col + col;
+        if (g_row < M && g_col < N) {
+            C[g_row * N + g_col] = acc[i];
+        }
+    }
+}
+
+void launch_matmul_tiled_1d(const float* A, const float* B, float* C,
+                            int M, int N, int K) {
+    dim3 block(512);
+    dim3 grid((N + R1_BN - 1) / R1_BN, (M + R1_BM - 1) / R1_BM);
+    matmul_tiled_1d_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 8 - matmul_tiled_2d_kernel (not yet solved)
 # TODO: implement
