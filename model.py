@@ -739,8 +739,46 @@ void launch_matmul_splitk(const float* A, const float* B, float* C,
     matmul_splitk_kernel<<<grid, block>>>(A, B, C, M, N, K, k_per_split);
 }
 
-# Step 14 - gemv_kernel (not yet solved)
-# TODO: implement
+# Step 14 - gemv_kernel
+#include <cuda_runtime.h>
+
+__global__ void gemv_kernel(const float* A, const float* x, float* y, int M, int K) {
+    int warp_id = threadIdx.x / 32;   // 0..3 within the block
+    int lane    = threadIdx.x % 32;
+
+    int row = blockIdx.x * 4 + warp_id;
+
+    // Rows past M do nothing. The row is uniform across the warp, so this
+    // early return is safe and keeps the shuffle reduction warp-uniform.
+    if (row >= M) return;
+
+    const float* row_ptr = A + (size_t)row * K;
+
+    // Each lane strides through the row with stride 32 (coalesced: a warp
+    // load covers 32 consecutive floats = 128 bytes).
+    float sum = 0.0f;
+    for (int k = lane; k < K; k += 32) {
+        sum += row_ptr[k] * x[k];
+    }
+
+    // Butterfly reduction across the 32 lanes.
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_xor_sync(0xffffffffu, sum, offset);
+    }
+
+    // After the reduction every lane holds the full row sum; lane 0 stores.
+    if (lane == 0) {
+        y[row] = sum;
+    }
+}
+
+void launch_gemv(const float* A, const float* x, float* y, int M, int K) {
+    // 128 threads = 4 warps = 4 rows per block.
+    dim3 block(128);
+    dim3 grid((M + 3) / 4);
+    gemv_kernel<<<grid, block>>>(A, x, y, M, K);
+}
 
 # Step 15 - matmul_bias_relu_kernel (not yet solved)
 # TODO: implement
