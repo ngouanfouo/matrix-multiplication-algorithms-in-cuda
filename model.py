@@ -617,8 +617,64 @@ void launch_matmul_nt(const float* A, const float* B, float* C,
     matmul_nt_kernel<<<grid, block>>>(A, B, C, M, N, K);
 }
 
-# Step 12 - matmul_batched_kernel (not yet solved)
-# TODO: implement
+# Step 12 - matmul_batched_kernel
+#include <cuda_runtime.h>
+
+constexpr int TILE_BATCH = 16;
+
+__global__ void matmul_batched_kernel(const float* A, const float* B, float* C,
+                                      int M, int N, int K) {
+    __shared__ float As[TILE_BATCH][TILE_BATCH];
+    __shared__ float Bs[TILE_BATCH][TILE_BATCH];
+
+    // Select this block's batch element.
+    const float* Ab = A + (size_t)blockIdx.z * M * K;
+    const float* Bb = B + (size_t)blockIdx.z * K * N;
+    float*       Cb = C + (size_t)blockIdx.z * M * N;
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    int row = blockIdx.y * TILE_BATCH + ty;   // m index in C
+    int col = blockIdx.x * TILE_BATCH + tx;   // n index in C
+
+    float sum = 0.0f;
+
+    int num_tiles = (K + TILE_BATCH - 1) / TILE_BATCH;
+    for (int t = 0; t < num_tiles; ++t) {
+        int k0 = t * TILE_BATCH;
+
+        // A tile: Ab[row][k0 + tx]
+        int a_col = k0 + tx;
+        As[ty][tx] = (row < M && a_col < K) ? Ab[row * K + a_col] : 0.0f;
+
+        // B tile: Bb[k0 + ty][col]
+        int b_row = k0 + ty;
+        Bs[ty][tx] = (b_row < K && col < N) ? Bb[b_row * N + col] : 0.0f;
+
+        __syncthreads();
+
+        #pragma unroll
+        for (int k = 0; k < TILE_BATCH; ++k) {
+            sum += As[ty][k] * Bs[k][tx];
+        }
+
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        Cb[row * N + col] = sum;
+    }
+}
+
+void launch_matmul_batched(const float* A, const float* B, float* C,
+                           int M, int N, int K, int batch) {
+    dim3 block(TILE_BATCH, TILE_BATCH);
+    dim3 grid((N + TILE_BATCH - 1) / TILE_BATCH,
+              (M + TILE_BATCH - 1) / TILE_BATCH,
+              batch);
+    matmul_batched_kernel<<<grid, block>>>(A, B, C, M, N, K);
+}
 
 # Step 13 - matmul_splitk_kernel (not yet solved)
 # TODO: implement
