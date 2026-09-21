@@ -25,7 +25,7 @@ python scaffold.py
 - [x] **13.** matmul_splitk_kernel
 - [x] **14.** gemv_kernel
 - [x] **15.** matmul_bias_relu_kernel
-- [ ] **16.** matrix_addsub_kernel
+- [x] **16.** matrix_addsub_kernel
 - [ ] **17.** strassen_one_level
 - [ ] **18.** csr_spmm_kernel
 - [ ] **19.** matmul_lower_triangular_kernel
