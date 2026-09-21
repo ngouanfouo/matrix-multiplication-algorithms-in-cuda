@@ -15,7 +15,7 @@ python scaffold.py
 - [x] **3.** matmul_naive_kernel
 - [x] **4.** matmul_coalesced_kernel
 - [x] **5.** time_launch_ms
-- [ ] **6.** matmul_tiled_kernel
+- [x] **6.** matmul_tiled_kernel
 - [ ] **7.** matmul_tiled_1d_kernel
 - [ ] **8.** matmul_tiled_2d_kernel
 - [ ] **9.** matmul_vectorized_kernel
